@@ -102,10 +102,10 @@ async function seed() {
 
   await confirmationTypeRepo.save(confirmations);
 
-  console.log('✅ Seed complete!');
+  console.log('Seed complete!');
   await dataSource.destroy();
 }
 
 seed().catch((e) => {
-  console.error('❌ Seed failed:', e);
+  console.error('Seed failed:', e);
 });
