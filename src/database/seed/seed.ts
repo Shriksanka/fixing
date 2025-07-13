@@ -2,7 +2,7 @@ import { DataSource } from 'typeorm';
 import { Direction } from '../entities/direction.entity';
 import { Timeframe } from '../entities/timeframe.entity';
 import { ConfirmationType } from '../entities/confirmation-type.entity';
-import { AppDataSource } from '../data-source';
+import AppDataSource from '../data-source';
 
 async function seed() {
   const dataSource: DataSource = await AppDataSource.initialize();

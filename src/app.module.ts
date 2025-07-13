@@ -2,7 +2,7 @@ import { Module } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { AlertsModule } from './alerts/alerts.module';
-import { AppDataSource } from './database/data-source';
+import AppDataSource from './database/data-source';
 import { ConfirmationsModule } from './confirmations/confirmations.module';
 import { DecisionModule } from './decision/decision.module';
 import { PositionsModule } from './positions/positions.module';
