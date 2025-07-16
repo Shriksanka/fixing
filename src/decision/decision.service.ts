@@ -33,9 +33,12 @@ export class DecisionService {
       relations: ['direction'],
     });
 
-    if (!type) throw new Error('Unknown confirmation type');
+    if (!type) throw new Error(`Unknown confirmation type: ${typeName}`);
 
-    // Save or update confirmation
+    const direction = type.direction.name as 'long' | 'short';
+    const directionId = type.direction.id;
+
+    // Сохраняем подтверждение, включая логику удаления антагониста
     const saveResult = await this.confirmationsService.saveUniqueConfirmation({
       symbolId,
       timeframeId,
@@ -43,23 +46,51 @@ export class DecisionService {
       price,
     });
 
-    const directionId = type.direction.id;
+    console.log('[processAlert]', { type: typeName, direction });
 
-    console.log('--- Считаем подтверждения для выхода ---');
-    console.log('symbolId:', symbolId);
-    console.log('timeframeId:', timeframeId);
-    console.log('directionId:', directionId);
+    // 🚨 Спец-обработка: проверка, пострадал ли антагонист
+    if (type.antagonist_name) {
+      const antagonistType = await this.confirmationTypeRepository.findOne({
+        where: { name: type.antagonist_name },
+        relations: ['direction'],
+      });
 
-    // Подсчёт подтверждений
-    const count = await this.confirmationsService.countConfirmationsByDirection(
-      {
-        symbolId,
-        timeframeId,
-        directionId,
-      },
-    );
+      if (antagonistType) {
+        const antagonistDirection = antagonistType.direction.name as
+          | 'long'
+          | 'short';
+        const antagonistDirectionId = antagonistType.direction.id;
 
-    // Exit-сигнал — очистить подтверждения противоположного направления
+        const antagCount =
+          await this.confirmationsService.countConfirmationsByDirection({
+            symbolId,
+            timeframeId,
+            directionId: antagonistDirectionId,
+          });
+
+        const activePosition = await this.positionsService.findPosition(
+          symbolId,
+          antagonistDirection,
+        );
+
+        console.log('[antagonist check]', {
+          antagDirection: antagonistDirection,
+          antagCount,
+          hasActive: !!activePosition,
+        });
+
+        if (antagCount < 5 && activePosition) {
+          return this.positionsService.exitPosition({
+            symbolId,
+            direction: antagonistDirection,
+            price,
+            reason: 'too_few_confirmations',
+          });
+        }
+      }
+    }
+
+    // Если сигнал — Exit Buy/Sell
     if (type.name === 'Exit Buy' || type.name === 'Exit Sell') {
       await this.confirmationsService.clearDirectionConfirmations({
         symbolId,
@@ -69,15 +100,24 @@ export class DecisionService {
 
       return this.positionsService.exitPosition({
         symbolId,
-        direction: type.direction.name,
-        reason: 'exit_signal',
+        direction,
         price,
+        reason: 'exit_signal',
       });
     }
 
+    // Нормальный сценарий: вход
+    const count = await this.confirmationsService.countConfirmationsByDirection(
+      {
+        symbolId,
+        timeframeId,
+        directionId,
+      },
+    );
+
     const hasPosition = await this.positionsService.findPosition(
       symbolId,
-      type.direction.name,
+      direction,
     );
 
     if (count === 5) {
@@ -90,69 +130,35 @@ export class DecisionService {
         this.timeframe1dId,
       );
 
-      const signalDirection = type.direction.name;
-
-      if (tf4h !== signalDirection || tf1d !== signalDirection) {
+      if (tf4h !== direction || tf1d !== direction) {
         return {
           status: 'blocked_by_trend',
-          message: `❌ Тренд 4H (${tf4h}) или 1D (${tf1d}) не совпадает с сигналом ${signalDirection}`,
+          message: `❌ Тренд 4H (${tf4h}) или 1D (${tf1d}) не совпадает с направлением ${direction}`,
         };
       }
 
       if (!hasPosition) {
         return this.positionsService.enterPosition({
           symbolId,
-          direction: signalDirection,
+          direction,
           price,
           reason: 'entry',
         });
       }
 
-      // ничего не делаем, позиция уже есть
       return { status: 'already_in_position' };
     }
 
-    if (count > 5 && count <= 7) {
-      if (hasPosition) {
-        return this.positionsService.addToPosition({
-          symbolId,
-          direction: type.direction.name as 'long' | 'short',
-          price,
-          reason: 'scale_in',
-        });
-      }
-      return { status: 'no_position_for_scale_in' };
-    }
-
-    const activePosition =
-      await this.positionsService.getActivePosition(symbolId);
-
-    // частичный выход при снижении
-    if (
-      count === 6 &&
-      activePosition &&
-      activePosition.direction.name === type.direction.name
-    ) {
-      return this.positionsService.reducePosition({
-        symbolId,
-        direction: type.direction.name as 'long' | 'short',
-        reason: 'scale_out',
-        price,
-      });
-    }
-
-    // полный выход при count < 5
-    if (
-      count < 5 &&
-      activePosition &&
-      activePosition.direction.name === type.direction.name
-    ) {
+    // Закрытие позиции по текущему направлению
+    if (count < 5 && hasPosition) {
       return this.positionsService.exitPosition({
         symbolId,
-        direction: type.direction.name as 'long' | 'short',
-        reason: 'too_few_confirmations',
+        direction,
         price,
+        reason: 'too_few_confirmations',
       });
     }
+
+    return { status: 'no_action', count };
   }
 }

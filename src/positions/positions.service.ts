@@ -3,8 +3,8 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Position } from '../database/entities/position.entity';
 import { Symbol } from '../database/entities/symbol.entity';
-import { Direction } from '../database/entities/direction.entity';
-import { TelegramService } from '../telegram/telegram.service';
+import { HttpService } from '@nestjs/axios';
+import { firstValueFrom } from 'rxjs';
 
 @Injectable()
 export class PositionsService {
@@ -13,16 +13,10 @@ export class PositionsService {
     private readonly positionRepo: Repository<Position>,
     @InjectRepository(Symbol)
     private readonly symbolRepo: Repository<Symbol>,
-    @InjectRepository(Direction)
-    private readonly directionRepo: Repository<Direction>,
-    private readonly telegramService: TelegramService,
+    private readonly http: HttpService,
   ) {}
 
-  private async getDirectionEntity(name: string): Promise<Direction> {
-    const dir = await this.directionRepo.findOne({ where: { name } });
-    if (!dir) throw new Error(`Direction ${name} not found`);
-    return dir;
-  }
+  private BASE_URL = 'http://localhost:3100';
 
   async enterPosition({
     symbolId,
@@ -35,29 +29,21 @@ export class PositionsService {
     price: number;
     reason: string;
   }) {
-    const dir = await this.getDirectionEntity(direction);
+    try {
+      await firstValueFrom(
+        this.http.post(`${this.BASE_URL}/positions/enter`, {
+          symbolId,
+          direction,
+          price,
+          reason,
+        }),
+      );
 
-    const exists = await this.positionRepo.findOne({
-      where: { symbol: { id: symbolId }, direction: { id: dir.id } },
-    });
-
-    if (exists) return;
-
-    const symbolName = await this.getSymbolName(symbolId);
-
-    await this.positionRepo.save({
-      symbol: { id: symbolId },
-      direction: dir,
-      price,
-      reason,
-      amount: 10000,
-      entry_price: 121412,
-      created_at: new Date(),
-    });
-
-    await this.telegramService.sendMessage(
-      `🟢 Вход в позицию: ${symbolName} ${direction} по ${price} (${reason})`,
-    );
+      return { status: 'position_entered' };
+    } catch (error) {
+      console.error('Error while entering position', error);
+      return { status: 'error', error };
+    }
   }
 
   async exitPosition({
@@ -71,64 +57,64 @@ export class PositionsService {
     price: number;
     reason: string;
   }) {
-    const position = await this.findPosition(symbolId, direction);
-    if (!position) return { skipped: 'no_position' };
+    try {
+      await firstValueFrom(
+        this.http.post(`${this.BASE_URL}/positions/exit`, {
+          symbolId,
+          direction,
+          price,
+          reason,
+        }),
+      );
 
-    const dir = await this.getDirectionEntity(direction);
-
-    const symbolName = await this.getSymbolName(symbolId);
-
-    await this.positionRepo.delete({
-      symbol: { id: symbolId },
-      direction: { id: dir.id },
-    });
-
-    await this.telegramService.sendMessage(
-      `🔴 Выход из позиции: ${symbolName} ${direction} по ${price} (${reason})`,
-    );
+      return { status: 'position_exited' };
+    } catch (error) {
+      console.error('Error while exiting position', error);
+      return { status: 'error', error };
+    }
   }
 
-  async addToPosition({
-    symbolId,
-    direction,
-    price,
-    reason,
-  }: {
-    symbolId: string;
-    direction: string;
-    price: number;
-    reason: string;
-  }) {
-    const symbolName = await this.getSymbolName(symbolId);
+  // async addToPosition({
+  //   symbolId,
+  //   direction,
+  //   price,
+  //   reason,
+  // }: {
+  //   symbolId: string;
+  //   direction: string;
+  //   price: number;
+  //   reason: string;
+  // }) {
+  //   const symbolName = await this.getSymbolName(symbolId);
 
-    const position = await this.findPosition(symbolId, direction);
-    if (!position) return { skipped: 'no_position' };
+  //   const position = await this.findPosition(symbolId, direction);
+  //   if (!position) return { skipped: 'no_position' };
 
-    await this.telegramService.sendMessage(
-      `🟡 Долив позиции: ${symbolName} ${direction} по ${price} (${reason})`,
-    );
-  }
+  //   await this.telegramService.sendMessage(
+  //     `🟡 Долив позиции: ${symbolName} ${direction} по ${price} (${reason})`,
+  //   );
+  // }
 
-  async reducePosition({
-    symbolId,
-    direction,
-    price,
-    reason,
-  }: {
-    symbolId: string;
-    direction: string;
-    price: number;
-    reason: string;
-  }) {
-    const symbolName = await this.getSymbolName(symbolId);
+  // async reducePosition({
+  //   symbolId,
+  //   direction,
+  //   price,
+  //   reason,
+  // }: {
+  //   symbolId: string;
+  //   direction: string;
+  //   price: number;
+  //   reason: string;
+  // }) {
+  //   const symbolName = await this.getSymbolName(symbolId);
 
-    const position = await this.findPosition(symbolId, direction);
-    if (!position) return { skipped: 'no_position' };
+  //   const position = await this.findPosition(symbolId, direction);
+  //   if (!position) return { skipped: 'no_position' };
 
-    await this.telegramService.sendMessage(
-      `🟠 Частичный выход: ${symbolName} ${direction} по ${price} (${reason})`,
-    );
-  }
+  //   await this.telegramService.sendMessage(
+  //     `🟠 Частичный выход: ${symbolName} ${direction} по ${price} (${reason})`,
+  //   );
+  // }
 
   async findPosition(symbolId: string, direction: string) {
     return this.positionRepo.findOne({
