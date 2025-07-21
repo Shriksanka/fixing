@@ -5,12 +5,14 @@ import { Confirmation } from '../database/entities/confirmation.entity';
 import { ConfirmationType } from '../database/entities/confirmation-type.entity';
 import { PositionsModule } from '../positions/positions.module';
 import { ConfirmationsModule } from '../confirmations/confirmations.module';
+import { TelegramModule } from '../telegram/telegram.module';
 
 @Module({
   imports: [
     TypeOrmModule.forFeature([Confirmation, ConfirmationType]),
     PositionsModule,
     ConfirmationsModule,
+    TelegramModule,
   ],
   providers: [DecisionService],
   exports: [DecisionService],

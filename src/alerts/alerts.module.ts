@@ -7,6 +7,7 @@ import { Symbol } from '../database/entities/symbol.entity';
 import { ConfirmationType } from '../database/entities/confirmation-type.entity';
 import { Timeframe } from '../database/entities/timeframe.entity';
 import { DecisionModule } from '../decision/decision.module';
+import { ConfirmationsModule } from '../confirmations/confirmations.module';
 
 @Module({
   imports: [
@@ -17,6 +18,7 @@ import { DecisionModule } from '../decision/decision.module';
       Timeframe,
     ]),
     DecisionModule,
+    ConfirmationsModule,
   ],
   providers: [AlertsService],
   controllers: [AlertsController],

@@ -13,6 +13,6 @@ export class CreateAlertDto {
   @IsNotEmpty()
   timeframe: string;
 
-  @IsNumber()
-  price: number;
+  @IsString()
+  price: string;
 }

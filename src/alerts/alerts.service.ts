@@ -6,6 +6,7 @@ import { Timeframe } from '../database/entities/timeframe.entity';
 import { ConfirmationType } from '../database/entities/confirmation-type.entity';
 import { CreateAlertDto } from './dto/create-alert.dto';
 import { DecisionService } from '../decision/decision.service';
+import { ConfirmationsService } from '../confirmations/confirmations.service';
 
 @Injectable()
 export class AlertsService {
@@ -16,7 +17,10 @@ export class AlertsService {
     @InjectRepository(ConfirmationType)
     private readonly typeRepo: Repository<ConfirmationType>,
     private readonly decisionService: DecisionService,
+    private readonly confirmationService: ConfirmationsService,
   ) {}
+
+  alertCounters: Record<string, number> = {};
 
   async handleAlert(dto: CreateAlertDto) {
     const {
@@ -50,11 +54,54 @@ export class AlertsService {
       throw new NotFoundException(`Timeframe '${timeframeName}' not found`);
     }
 
+    const parsedPrice = typeof price === 'string' ? parseFloat(price) : price;
+    if (isNaN(parsedPrice)) {
+      throw new Error(`Invalid price: ${price}`);
+    }
+
+    const trend = await this.confirmationService.getDominantDirection(
+      symbol.id,
+      timeframe.id,
+    );
+
+    const confirmations =
+      await this.decisionService.getConfirmationsWithTypesAndDirections({
+        symbolId: symbol.id,
+        timeframeId: timeframe.id,
+      });
+
+    const longSignals = confirmations
+      .filter((c) => c.type.direction.name === 'long')
+      .map((c) => c.type.name);
+
+    const shortSignals = confirmations
+      .filter((c) => c.type.direction.name === 'short')
+      .map((c) => c.type.name);
+
+    console.log('[ALERT RECEIVED]', {
+      alert: alertName,
+      direction: type.direction?.name,
+      symbol: symbol.name,
+      timeframe: timeframe.name,
+      price: parsedPrice,
+      trend: trend ?? 'neutral',
+    });
+
+    console.log(
+      `🟩 ЛОНГ подтверждений для ${symbol.name} (${timeframe.name}): ${longSignals.length}`,
+    );
+    console.log(`↪ ${longSignals.join(', ') || '—'}`);
+
+    console.log(
+      `🟥 ШОРТ подтверждений для ${symbol.name} (${timeframe.name}): ${shortSignals.length}`,
+    );
+    console.log(`↪ ${shortSignals.join(', ') || '—'}`);
+
     await this.decisionService.processAlert({
       symbolId: symbol.id,
       timeframeId: timeframe.id,
       typeName: alertName,
-      price,
+      price: parsedPrice,
     });
   }
 }

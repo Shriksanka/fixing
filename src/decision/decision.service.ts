@@ -4,6 +4,7 @@ import { Repository } from 'typeorm';
 import { ConfirmationType } from '../database/entities/confirmation-type.entity';
 import { ConfirmationsService } from '../confirmations/confirmations.service';
 import { PositionsService } from '../positions/positions.service';
+import { TelegramService } from '../telegram/telegram.service';
 
 @Injectable()
 export class DecisionService {
@@ -12,6 +13,7 @@ export class DecisionService {
     private readonly confirmationTypeRepository: Repository<ConfirmationType>,
     private readonly confirmationsService: ConfirmationsService,
     private readonly positionsService: PositionsService,
+    private readonly telegramService: TelegramService,
   ) {}
 
   private readonly timeframe4hId = 'e6938b7c-c055-4653-82cf-b42b23822e0a';
@@ -38,6 +40,9 @@ export class DecisionService {
     const direction = type.direction.name as 'long' | 'short';
     const directionId = type.direction.id;
 
+    const symbolName =
+      await this.confirmationsService.getSymbolNameById(symbolId);
+
     // Сохраняем подтверждение, включая логику удаления антагониста
     const saveResult = await this.confirmationsService.saveUniqueConfirmation({
       symbolId,
@@ -46,7 +51,10 @@ export class DecisionService {
       price,
     });
 
-    console.log('[processAlert]', { type: typeName, direction });
+    const hasPosition = await this.positionsService.findPosition(
+      symbolId,
+      direction,
+    );
 
     // 🚨 Спец-обработка: проверка, пострадал ли антагонист
     if (type.antagonist_name) {
@@ -73,13 +81,10 @@ export class DecisionService {
           antagonistDirection,
         );
 
-        console.log('[antagonist check]', {
-          antagDirection: antagonistDirection,
-          antagCount,
-          hasActive: !!activePosition,
-        });
-
-        if (antagCount < 5 && activePosition) {
+        if (antagCount < 3 && activePosition) {
+          await this.telegramService.sendMessage(
+            `📤 Закрытие позиции ${antagonistDirection.toUpperCase()} по ${price} для ${symbolName}\nПричина: недостаточно подтверждений (<3)\nТаймфрейм: 15M`,
+          );
           return this.positionsService.exitPosition({
             symbolId,
             direction: antagonistDirection,
@@ -98,12 +103,20 @@ export class DecisionService {
         directionId,
       });
 
-      return this.positionsService.exitPosition({
-        symbolId,
-        direction,
-        price,
-        reason: 'exit_signal',
-      });
+      if (hasPosition) {
+        await this.telegramService.sendMessage(
+          `📤 Закрытие позиции ${direction.toUpperCase()} по ${symbolName} @ ${price}\nПричина: сигнал ${type.name}`,
+        );
+
+        return this.positionsService.exitPosition({
+          symbolId,
+          direction,
+          price,
+          reason: 'exit_signal',
+        });
+      }
+
+      return { status: 'exit_skipped', reason: 'no_active_position' };
     }
 
     // Нормальный сценарий: вход
@@ -115,12 +128,7 @@ export class DecisionService {
       },
     );
 
-    const hasPosition = await this.positionsService.findPosition(
-      symbolId,
-      direction,
-    );
-
-    if (count === 5) {
+    if (count >= 4) {
       const tf4h = await this.confirmationsService.getDominantDirection(
         symbolId,
         this.timeframe4hId,
@@ -137,6 +145,43 @@ export class DecisionService {
         };
       }
 
+      const confirmations15m =
+        await this.confirmationsService.getConfirmationsWithTypesAndDirections({
+          symbolId,
+          timeframeId,
+        });
+      const signals15m = confirmations15m
+        .filter((c) => c.type.direction.name === direction)
+        .map((c) => c.type.name);
+
+      const confirmations4h =
+        await this.confirmationsService.getConfirmationsWithTypesAndDirections({
+          symbolId,
+          timeframeId: this.timeframe4hId,
+        });
+      const signals4h = confirmations4h
+        .filter((c) => c.type.direction.name === tf4h)
+        .map((c) => c.type.name);
+
+      const confirmations1d =
+        await this.confirmationsService.getConfirmationsWithTypesAndDirections({
+          symbolId,
+          timeframeId: this.timeframe1dId,
+        });
+      const signals1d = confirmations1d
+        .filter((c) => c.type.direction.name === tf1d)
+        .map((c) => c.type.name);
+
+      const msg = `
+      📥 Открытие позиции ${direction.toUpperCase()} по ${price} для ${symbolName}
+      📌 Причина: >=5 подтверждений на 15M + тренд 4H/1D совпадает
+      — 1D (${tf1d}): ${signals1d.join(', ') || '—'}
+      — 4H (${tf4h}): ${signals4h.join(', ') || '—'}
+      — 15M (${direction}): ${signals15m.join(', ') || '—'}
+      `;
+
+      await this.telegramService.sendMessage(msg.trim());
+
       if (!hasPosition) {
         return this.positionsService.enterPosition({
           symbolId,
@@ -150,7 +195,11 @@ export class DecisionService {
     }
 
     // Закрытие позиции по текущему направлению
-    if (count < 5 && hasPosition) {
+    if (count < 3 && hasPosition) {
+      await this.telegramService.sendMessage(
+        `📤 Закрытие позиции ${direction.toUpperCase()} по ${symbolName} @ ${price}\nПричина: подтверждений <3 на 15M`,
+      );
+
       return this.positionsService.exitPosition({
         symbolId,
         direction,
@@ -159,6 +208,19 @@ export class DecisionService {
       });
     }
 
-    return { status: 'no_action', count };
+    return { status: 'exit_skipped', reason: 'no_active_position' };
+  }
+
+  async getConfirmationsWithTypesAndDirections({
+    symbolId,
+    timeframeId,
+  }: {
+    symbolId: string;
+    timeframeId: string;
+  }) {
+    return this.confirmationsService.getConfirmationsWithTypesAndDirections({
+      symbolId,
+      timeframeId,
+    });
   }
 }

@@ -159,4 +159,29 @@ export class ConfirmationsService {
 
     return result.affected ?? 0;
   }
+
+  async getConfirmationsWithTypesAndDirections({
+    symbolId,
+    timeframeId,
+  }: {
+    symbolId: string;
+    timeframeId: string;
+  }) {
+    return this.confirmationRepository.find({
+      where: {
+        symbol: { id: symbolId },
+        timeframe: { id: timeframeId },
+      },
+      relations: ['type', 'type.direction'],
+      order: { created_at: 'DESC' },
+    });
+  }
+
+  async getSymbolNameById(symbolId: string): Promise<string> {
+    const symbol = await this.confirmationRepository.manager
+      .getRepository('Symbol')
+      .findOne({ where: { id: symbolId } });
+
+    return symbol?.name ?? symbolId;
+  }
 }
