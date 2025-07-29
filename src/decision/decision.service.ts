@@ -5,6 +5,7 @@ import { ConfirmationType } from '../database/entities/confirmation-type.entity'
 import { ConfirmationsService } from '../confirmations/confirmations.service';
 import { PositionsService } from '../positions/positions.service';
 import { TelegramService } from '../telegram/telegram.service';
+import { TradingConfig } from './trading.config';
 
 @Injectable()
 export class DecisionService {
@@ -15,9 +16,6 @@ export class DecisionService {
     private readonly positionsService: PositionsService,
     private readonly telegramService: TelegramService,
   ) {}
-
-  private readonly timeframe4hId = 'e6938b7c-c055-4653-82cf-b42b23822e0a';
-  private readonly timeframe1dId = 'cc03715b-0b7d-4a39-979d-26b2eb26314a';
 
   async processAlert({
     symbolId,
@@ -34,181 +32,353 @@ export class DecisionService {
       where: { name: typeName },
       relations: ['direction'],
     });
-
     if (!type) throw new Error(`Unknown confirmation type: ${typeName}`);
 
     const direction = type.direction.name as 'long' | 'short';
     const directionId = type.direction.id;
-
+    const opposite = direction === 'long' ? 'short' : 'long';
     const symbolName =
       await this.confirmationsService.getSymbolNameById(symbolId);
-
-    // Сохраняем подтверждение, включая логику удаления антагониста
     const saveResult = await this.confirmationsService.saveUniqueConfirmation({
       symbolId,
       timeframeId,
       typeId: type.id,
       price,
     });
-
-    const hasPosition = await this.positionsService.findPosition(
+    const hasPosition = !!(await this.positionsService.findPosition(
       symbolId,
       direction,
-    );
+    ));
 
-    // 🚨 Спец-обработка: проверка, пострадал ли антагонист
-    if (type.antagonist_name) {
-      const antagonistType = await this.confirmationTypeRepository.findOne({
-        where: { name: type.antagonist_name },
-        relations: ['direction'],
-      });
+    if (
+      await this.handleExit(
+        type.name,
+        directionId,
+        symbolName,
+        symbolId,
+        timeframeId,
+        direction,
+        hasPosition,
+        price,
+      )
+    )
+      return;
+    if (
+      await this.handleStrongEntry(
+        type.name,
+        direction,
+        opposite,
+        symbolId,
+        timeframeId,
+        price,
+        symbolName,
+        hasPosition,
+      )
+    )
+      return;
+    if (
+      await this.handleTimeframeEntry(
+        symbolId,
+        timeframeId,
+        direction,
+        price,
+        symbolName,
+        hasPosition,
+      )
+    )
+      return;
+    if (
+      await this.handleAddToPosition(
+        direction,
+        symbolId,
+        timeframeId,
+        price,
+        symbolName,
+        hasPosition,
+        !!saveResult.created,
+      )
+    )
+      return;
+    if (
+      await this.handleCloseIfLessThan3(
+        direction,
+        directionId,
+        symbolId,
+        timeframeId,
+        price,
+        symbolName,
+        hasPosition,
+      )
+    )
+      return;
 
-      if (antagonistType) {
-        const antagonistDirection = antagonistType.direction.name as
-          | 'long'
-          | 'short';
-        const antagonistDirectionId = antagonistType.direction.id;
+    return { status: 'handled' };
+  }
 
-        const antagCount =
-          await this.confirmationsService.countConfirmationsByDirection({
-            symbolId,
-            timeframeId,
-            directionId: antagonistDirectionId,
-          });
-
-        const activePosition = await this.positionsService.findPosition(
-          symbolId,
-          antagonistDirection,
-        );
-
-        if (antagCount < 3 && activePosition) {
-          await this.telegramService.sendMessage(
-            `📤 Закрытие позиции ${antagonistDirection.toUpperCase()} по ${price} для ${symbolName}\nПричина: недостаточно подтверждений (<3)\nТаймфрейм: 15M`,
-          );
-          return this.positionsService.exitPosition({
-            symbolId,
-            direction: antagonistDirection,
-            price,
-            reason: 'too_few_confirmations',
-          });
-        }
-      }
-    }
-
-    // Если сигнал — Exit Buy/Sell
-    if (type.name === 'Exit Buy' || type.name === 'Exit Sell') {
+  private async handleExit(
+    typeName: string,
+    directionId: string,
+    symbolName: string,
+    symbolId: string,
+    timeframeId: string,
+    direction: string,
+    hasPosition: boolean,
+    price: number,
+  ) {
+    if (typeName === 'Exit Buy' || typeName === 'Exit Sell') {
       await this.confirmationsService.clearDirectionConfirmations({
         symbolId,
         timeframeId,
         directionId,
       });
-
       if (hasPosition) {
-        await this.telegramService.sendMessage(
-          `📤 Закрытие позиции ${direction.toUpperCase()} по ${symbolName} @ ${price}\nПричина: сигнал ${type.name}`,
-        );
-
-        return this.positionsService.exitPosition({
+        const result = await this.positionsService.exitPosition({
           symbolId,
           direction,
           price,
           reason: 'exit_signal',
         });
+        if (result?.status === 'position_exited') {
+          await this.telegramService.sendMessage(
+            `📤 Закрытие позиции ${direction.toUpperCase()} по ${symbolName} @ ${price}\nПричина: сигнал ${typeName}`,
+          );
+        }
+        return true;
       }
-
-      return { status: 'exit_skipped', reason: 'no_active_position' };
+      return true;
     }
+    return false;
+  }
 
-    // Нормальный сценарий: вход
-    const count = await this.confirmationsService.countConfirmationsByDirection(
-      {
+  private async handleStrongEntry(
+    typeName: string,
+    direction: string,
+    opposite: string,
+    symbolId: string,
+    timeframeId: string,
+    price: number,
+    symbolName: string,
+    hasPosition: boolean,
+  ) {
+    if (typeName !== 'Strong Long Entry' && typeName !== 'Strong Short Entry')
+      return false;
+
+    const [tf4h, tf1d] = await this.getTrendDirections(symbolId);
+    if (tf4h !== direction || tf1d !== direction) return false;
+
+    const all =
+      await this.confirmationsService.getConfirmationsWithTypesAndDirections({
         symbolId,
         timeframeId,
-        directionId,
-      },
-    );
-
-    if (count >= 4) {
-      const tf4h = await this.confirmationsService.getDominantDirection(
-        symbolId,
-        this.timeframe4hId,
-      );
-      const tf1d = await this.confirmationsService.getDominantDirection(
-        symbolId,
-        this.timeframe1dId,
-      );
-
-      if (tf4h !== direction || tf1d !== direction) {
-        return {
-          status: 'blocked_by_trend',
-          message: `❌ Тренд 4H (${tf4h}) или 1D (${tf1d}) не совпадает с направлением ${direction}`,
-        };
-      }
-
-      const confirmations15m =
-        await this.confirmationsService.getConfirmationsWithTypesAndDirections({
-          symbolId,
-          timeframeId,
-        });
-      const signals15m = confirmations15m
-        .filter((c) => c.type.direction.name === direction)
-        .map((c) => c.type.name);
-
-      const confirmations4h =
-        await this.confirmationsService.getConfirmationsWithTypesAndDirections({
-          symbolId,
-          timeframeId: this.timeframe4hId,
-        });
-      const signals4h = confirmations4h
-        .filter((c) => c.type.direction.name === tf4h)
-        .map((c) => c.type.name);
-
-      const confirmations1d =
-        await this.confirmationsService.getConfirmationsWithTypesAndDirections({
-          symbolId,
-          timeframeId: this.timeframe1dId,
-        });
-      const signals1d = confirmations1d
-        .filter((c) => c.type.direction.name === tf1d)
-        .map((c) => c.type.name);
-
-      const msg = `
-      📥 Открытие позиции ${direction.toUpperCase()} по ${price} для ${symbolName}
-      📌 Причина: >=5 подтверждений на 15M + тренд 4H/1D совпадает
-      — 1D (${tf1d}): ${signals1d.join(', ') || '—'}
-      — 4H (${tf4h}): ${signals4h.join(', ') || '—'}
-      — 15M (${direction}): ${signals15m.join(', ') || '—'}
-      `;
-
-      await this.telegramService.sendMessage(msg.trim());
-
-      if (!hasPosition) {
-        return this.positionsService.enterPosition({
-          symbolId,
-          direction,
-          price,
-          reason: 'entry',
-        });
-      }
-
-      return { status: 'already_in_position' };
-    }
-
-    // Закрытие позиции по текущему направлению
-    if (count < 3 && hasPosition) {
-      await this.telegramService.sendMessage(
-        `📤 Закрытие позиции ${direction.toUpperCase()} по ${symbolName} @ ${price}\nПричина: подтверждений <3 на 15M`,
-      );
-
-      return this.positionsService.exitPosition({
-        symbolId,
-        direction,
-        price,
-        reason: 'too_few_confirmations',
       });
+    const oppositeCount = all.filter(
+      (c) => c.type.direction.name === opposite,
+    ).length;
+    if (oppositeCount >= 3 || hasPosition) return false;
+
+    const [confirmations15m, confirmations4h, confirmations1d] =
+      await this.getAllConfirmations(symbolId, timeframeId);
+    const result = await this.positionsService.enterPosition({
+      symbolId,
+      direction,
+      price,
+      reason: 'strong_entry',
+    });
+    if (result?.status === 'position_entered') {
+      await this.telegramService.sendMessage(
+        this.buildOpenMessage(
+          'Strong Entry + совпадение тренда + <3 противоположных',
+          direction,
+          symbolName,
+          price,
+          confirmations15m,
+          confirmations4h,
+          confirmations1d,
+        ),
+      );
+    }
+    return true;
+  }
+
+  private async handleAddToPosition(
+    direction: string,
+    symbolId: string,
+    timeframeId: string,
+    price: number,
+    symbolName: string,
+    hasPosition: boolean,
+    created: boolean,
+  ) {
+    if (!hasPosition || !created) return false;
+    const [confirmations15m, confirmations4h, confirmations1d] =
+      await this.getAllConfirmations(symbolId, timeframeId);
+    await this.telegramService.sendMessage(
+      this.buildOpenMessage(
+        'Долив позиции',
+        direction,
+        symbolName,
+        price,
+        confirmations15m,
+        confirmations4h,
+        confirmations1d,
+      ),
+    );
+    return true;
+  }
+
+  private async handleCloseIfLessThan3(
+    direction: string,
+    directionId: string,
+    symbolId: string,
+    timeframeId: string,
+    price: number,
+    symbolName: string,
+    hasPosition: boolean,
+  ) {
+    if (!hasPosition) return false;
+
+    const ttlMinutes =
+      timeframeId === TradingConfig.timeframes.TF_15M
+        ? 30
+        : timeframeId === TradingConfig.timeframes.TF_1H
+          ? 180
+          : null;
+
+    if (!ttlMinutes) return false;
+
+    const recentConfirmations =
+      await this.confirmationsService.getRecentConfirmations({
+        symbolId,
+        timeframeId,
+        direction: direction as 'long' | 'short',
+        ttlMinutes,
+      });
+
+    if (recentConfirmations.length >= 3) return false;
+
+    const result = await this.positionsService.exitPosition({
+      symbolId,
+      direction,
+      price,
+      reason: 'too_few_confirmations',
+    });
+
+    if (result?.status === 'position_exited') {
+      await this.telegramService.sendMessage(
+        `📤 Закрытие позиции ${direction.toUpperCase()} по ${symbolName} @ ${price}\nПричина: подтверждений <3 на ${ttlMinutes === 30 ? '15M' : '1H'}`,
+      );
     }
 
-    return { status: 'exit_skipped', reason: 'no_active_position' };
+    return true;
+  }
+
+  private async handleTimeframeEntry(
+    symbolId: string,
+    timeframeId: string,
+    direction: 'long' | 'short',
+    price: number,
+    symbolName: string,
+    hasPosition: boolean,
+  ): Promise<boolean> {
+    if (hasPosition) return false;
+
+    const [tf4h, tf1d] = await this.getTrendDirections(symbolId);
+    if (tf4h !== direction || tf1d !== direction) return false;
+
+    const ttlMinutes =
+      timeframeId === TradingConfig.timeframes.TF_15M
+        ? 30
+        : timeframeId === TradingConfig.timeframes.TF_1H
+          ? 180
+          : null;
+
+    if (!ttlMinutes) return false;
+
+    const recentConfirmations =
+      await this.confirmationsService.getRecentConfirmations({
+        symbolId,
+        timeframeId,
+        direction,
+        ttlMinutes,
+      });
+
+    if (recentConfirmations.length < 3) return false;
+
+    const [confirmations15m, confirmations4h, confirmations1d] =
+      await this.getAllConfirmations(symbolId, timeframeId);
+
+    const result = await this.positionsService.enterPosition({
+      symbolId,
+      direction,
+      price,
+      reason:
+        timeframeId === TradingConfig.timeframes.TF_15M
+          ? 'entry_15m'
+          : 'entry_1h',
+    });
+
+    if (result?.status === 'position_entered') {
+      await this.telegramService.sendMessage(
+        this.buildOpenMessage(
+          `≥3 подтверждения на ${timeframeId === TradingConfig.timeframes.TF_15M ? '15M (до 30 мин)' : '1H (до 3ч)'}`,
+          direction,
+          symbolName,
+          price,
+          confirmations15m,
+          confirmations4h,
+          confirmations1d,
+        ),
+      );
+    }
+
+    return true;
+  }
+
+  private getTrendDirections(symbolId: string) {
+    return Promise.all([
+      this.confirmationsService.getDominantDirection(
+        symbolId,
+        TradingConfig.timeframes.TF_4H,
+      ),
+      this.confirmationsService.getDominantDirection(
+        symbolId,
+        TradingConfig.timeframes.TF_1D,
+      ),
+    ]);
+  }
+
+  private buildOpenMessage(
+    reason: string,
+    direction: string,
+    symbolName: string,
+    price: number,
+    c15m: any[],
+    c4h: any[],
+    c1d: any[],
+  ) {
+    const fmt = (list: any[]) =>
+      list
+        .filter((c) => c.type.direction.name === direction)
+        .map((c) => c.type.name)
+        .join(', ') || '—';
+    return `📥 Открытие позиции ${direction.toUpperCase()} по ${symbolName} @ ${price}\n📌 Причина: ${reason}\n— 1D: ${fmt(c1d)}\n— 4H: ${fmt(c4h)}\n— 15M: ${fmt(c15m)}`;
+  }
+
+  private getAllConfirmations(symbolId: string, timeframeId?: string) {
+    return Promise.all([
+      this.confirmationsService.getConfirmationsWithTypesAndDirections({
+        symbolId,
+        timeframeId: timeframeId!,
+      }),
+      this.confirmationsService.getConfirmationsWithTypesAndDirections({
+        symbolId,
+        timeframeId: TradingConfig.timeframes.TF_4H,
+      }),
+      this.confirmationsService.getConfirmationsWithTypesAndDirections({
+        symbolId,
+        timeframeId: TradingConfig.timeframes.TF_1D,
+      }),
+    ]);
   }
 
   async getConfirmationsWithTypesAndDirections({

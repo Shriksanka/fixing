@@ -20,8 +20,6 @@ export class AlertsService {
     private readonly confirmationService: ConfirmationsService,
   ) {}
 
-  alertCounters: Record<string, number> = {};
-
   async handleAlert(dto: CreateAlertDto) {
     const {
       alertName,

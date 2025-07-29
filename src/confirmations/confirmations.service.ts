@@ -13,6 +13,31 @@ export class ConfirmationsService {
     private readonly confirmationTypeRepository: Repository<ConfirmationType>,
   ) {}
 
+  async getRecentConfirmations({
+    symbolId,
+    timeframeId,
+    direction,
+    ttlMinutes,
+  }: {
+    symbolId: string;
+    timeframeId: string;
+    direction: 'long' | 'short';
+    ttlMinutes: number;
+  }) {
+    const since = new Date(Date.now() - ttlMinutes * 60_000);
+
+    return this.confirmationRepository.find({
+      where: {
+        symbol: { id: symbolId },
+        timeframe: { id: timeframeId },
+        created_at: MoreThan(since),
+        type: { direction: { name: direction } },
+      },
+      relations: ['type', 'type.direction'],
+      order: { created_at: 'DESC' },
+    });
+  }
+
   async saveUniqueConfirmation({
     symbolId,
     timeframeId,

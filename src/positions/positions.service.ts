@@ -1,10 +1,13 @@
-import { Injectable } from '@nestjs/common';
+import { HttpException, Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Position } from '../database/entities/position.entity';
 import { Symbol } from '../database/entities/symbol.entity';
 import { HttpService } from '@nestjs/axios';
-import { firstValueFrom } from 'rxjs';
+import { retry, catchError } from 'rxjs/operators';
+import { firstValueFrom, timer } from 'rxjs';
+import { TradingConfig } from '../decision/trading.config';
+import { EnterExitDto } from './dto/enterexit.dto';
 
 @Injectable()
 export class PositionsService {
@@ -17,104 +20,42 @@ export class PositionsService {
   ) {}
 
   private BASE_URL = 'http://localhost:3100';
+  private readonly retryAttempts = TradingConfig.retry.attempts;
+  private readonly retryDelay = TradingConfig.retry.delayMs;
 
-  async enterPosition({
-    symbolId,
-    direction,
-    price,
-    reason,
-  }: {
-    symbolId: string;
-    direction: string;
-    price: number;
-    reason: string;
-  }) {
-    try {
-      await firstValueFrom(
-        this.http.post(`${this.BASE_URL}/positions/enter`, {
-          symbolId,
-          direction,
-          price,
-          reason,
+  private postWithRetry(path: string, body: any) {
+    return firstValueFrom(
+      this.http.post(`${this.BASE_URL}${path}`, body).pipe(
+        retry({
+          count: this.retryAttempts,
+          delay: () => timer(this.retryDelay),
         }),
-      );
+        catchError((err) => {
+          throw new HttpException(err.message, 500);
+        }),
+      ),
+    );
+  }
 
+  async enterPosition(params: EnterExitDto) {
+    try {
+      await this.postWithRetry('/positions/enter', params);
       return { status: 'position_entered' };
     } catch (error) {
-      console.error('Error while entering position', error);
-      return { status: 'error', error };
+      console.error('enterPosition failed', params, error);
+      return { status: 'error' };
     }
   }
 
-  async exitPosition({
-    symbolId,
-    direction,
-    price,
-    reason,
-  }: {
-    symbolId: string;
-    direction: string;
-    price: number;
-    reason: string;
-  }) {
+  async exitPosition(params: EnterExitDto) {
     try {
-      await firstValueFrom(
-        this.http.post(`${this.BASE_URL}/positions/exit`, {
-          symbolId,
-          direction,
-          price,
-          reason,
-        }),
-      );
-
+      await this.postWithRetry('/positions/exit', params);
       return { status: 'position_exited' };
     } catch (error) {
-      console.error('Error while exiting position', error);
-      return { status: 'error', error };
+      console.error('exitPosition failed', params, error);
+      return { status: 'error' };
     }
   }
-
-  // async addToPosition({
-  //   symbolId,
-  //   direction,
-  //   price,
-  //   reason,
-  // }: {
-  //   symbolId: string;
-  //   direction: string;
-  //   price: number;
-  //   reason: string;
-  // }) {
-  //   const symbolName = await this.getSymbolName(symbolId);
-
-  //   const position = await this.findPosition(symbolId, direction);
-  //   if (!position) return { skipped: 'no_position' };
-
-  //   await this.telegramService.sendMessage(
-  //     `🟡 Долив позиции: ${symbolName} ${direction} по ${price} (${reason})`,
-  //   );
-  // }
-
-  // async reducePosition({
-  //   symbolId,
-  //   direction,
-  //   price,
-  //   reason,
-  // }: {
-  //   symbolId: string;
-  //   direction: string;
-  //   price: number;
-  //   reason: string;
-  // }) {
-  //   const symbolName = await this.getSymbolName(symbolId);
-
-  //   const position = await this.findPosition(symbolId, direction);
-  //   if (!position) return { skipped: 'no_position' };
-
-  //   await this.telegramService.sendMessage(
-  //     `🟠 Частичный выход: ${symbolName} ${direction} по ${price} (${reason})`,
-  //   );
-  // }
 
   async findPosition(symbolId: string, direction: string) {
     return this.positionRepo.findOne({
@@ -138,7 +79,7 @@ export class PositionsService {
   async getSymbolName(symbolId: string): Promise<string> {
     const symbol = await this.symbolRepo.findOne({ where: { id: symbolId } });
 
-    if (!symbol) return symbolId; // fallback, чтобы не крашилось
+    if (!symbol) return symbolId;
     return symbol.name;
   }
 }

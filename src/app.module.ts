@@ -7,6 +7,8 @@ import { ConfirmationsModule } from './confirmations/confirmations.module';
 import { DecisionModule } from './decision/decision.module';
 import { PositionsModule } from './positions/positions.module';
 import { TelegramModule } from './telegram/telegram.module';
+import { SchedulerModule } from './scheduler/scheduler.module';
+import { ScheduleModule } from '@nestjs/schedule';
 
 @Module({
   imports: [
@@ -17,6 +19,8 @@ import { TelegramModule } from './telegram/telegram.module';
     DecisionModule,
     PositionsModule,
     TelegramModule,
+    ScheduleModule.forRoot(),
+    SchedulerModule,
   ],
 })
 export class AppModule {}
