@@ -101,5 +101,7 @@ export class AlertsService {
       typeName: alertName,
       price: parsedPrice,
     });
+
+    await this.decisionService.processAlertOrCron(symbol.id);
   }
 }

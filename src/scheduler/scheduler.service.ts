@@ -4,12 +4,11 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Symbol } from '../database/entities/symbol.entity';
 import { Timeframe } from '../database/entities/timeframe.entity';
-import { Direction } from '../database/entities/direction.entity';
-import { Confirmation } from '../database/entities/confirmation.entity';
 import { ConfirmationsService } from '../confirmations/confirmations.service';
 import { TelegramService } from '../telegram/telegram.service';
 import { PositionsService } from '../positions/positions.service';
 import { TradingConfig } from '../decision/trading.config';
+import { DecisionService } from '../decision/decision.service';
 
 @Injectable()
 export class SchedulerService {
@@ -21,6 +20,7 @@ export class SchedulerService {
     private readonly confirmationsService: ConfirmationsService,
     private readonly telegramService: TelegramService,
     private readonly positionsService: PositionsService,
+    private readonly decisionService: DecisionService,
   ) {}
 
   @Cron('0 * * * *') // каждый час
@@ -75,14 +75,22 @@ export class SchedulerService {
       let msg = `📊 Обзор по ${symbol.name}\n`;
       msg += `— Тренд 1D: ${trend1d ?? 'neutral'}\n`;
       msg += `— Тренд 4H: ${trend4h ?? 'neutral'}\n`;
-      msg += `— Подтверждения 1H:\n  🟩 Long: ${c1hFmt.long}\n  🟥 Short: ${c1hFmt.short}\n`;
-      msg += `— Подтверждения 15M:\n  🟩 Long: ${c15mFmt.long}\n  🟥 Short: ${c15mFmt.short}\n`;
+      msg += `— Подтверждения 1H:\n  🟢 Long: ${c1hFmt.long}\n  🔴 Short: ${c1hFmt.short}\n`;
+      msg += `— Подтверждения 15M:\n  🟢 Long: ${c15mFmt.long}\n  🔴 Short: ${c15mFmt.short}\n`;
 
       if (position) {
         msg += `— Открыта позиция: ${position.direction.name.toUpperCase()} @ ${position.entry_price}`;
       }
 
       await this.telegramService.sendMessage(msg);
+    }
+  }
+
+  @Cron('*/5 * * * *')
+  async checkVirtualPositions() {
+    const symbols = await this.confirmationsService.getAllSymbols();
+    for (const symbol of symbols) {
+      await this.decisionService.processAlertOrCron(symbol.id);
     }
   }
 }

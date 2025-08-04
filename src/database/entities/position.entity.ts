@@ -34,4 +34,7 @@ export class Position {
 
   @UpdateDateColumn()
   last_updated: Date;
+
+  @Column({ type: 'varchar', default: 'confirmations' })
+  entry_type: 'strong' | 'confirmations';
 }

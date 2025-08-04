@@ -3,6 +3,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Confirmation } from '../database/entities/confirmation.entity';
 import { Repository, MoreThan, In } from 'typeorm';
 import { ConfirmationType } from '../database/entities/confirmation-type.entity';
+import { Symbol } from '../database/entities/symbol.entity';
 
 @Injectable()
 export class ConfirmationsService {
@@ -11,6 +12,8 @@ export class ConfirmationsService {
     private readonly confirmationRepository: Repository<Confirmation>,
     @InjectRepository(ConfirmationType)
     private readonly confirmationTypeRepository: Repository<ConfirmationType>,
+    @InjectRepository(Symbol)
+    private readonly symbolRepository: Repository<Symbol>,
   ) {}
 
   async getRecentConfirmations({
@@ -208,5 +211,9 @@ export class ConfirmationsService {
       .findOne({ where: { id: symbolId } });
 
     return symbol?.name ?? symbolId;
+  }
+
+  async getAllSymbols() {
+    return this.symbolRepository.find();
   }
 }

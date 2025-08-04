@@ -10,6 +10,7 @@ import { Position } from '../database/entities/position.entity';
 import { ConfirmationsModule } from '../confirmations/confirmations.module';
 import { TelegramModule } from '../telegram/telegram.module';
 import { PositionsModule } from '../positions/positions.module';
+import { DecisionModule } from '../decision/decision.module';
 
 @Module({
   imports: [
@@ -21,6 +22,7 @@ import { PositionsModule } from '../positions/positions.module';
       Direction,
       Position,
     ]),
+    DecisionModule,
     ConfirmationsModule,
     TelegramModule,
     PositionsModule,
